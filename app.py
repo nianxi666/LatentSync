@@ -9,11 +9,28 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 # 假设核心推理函数位于 'scripts/inference.py' 中
-from scripts.inference import main
+# 注意：如果此脚本与 'scripts' 目录不在同一父目录下，可能需要调整Python路径
+try:
+    from scripts.inference import main
+except ImportError:
+    print("错误：无法导入 'scripts.inference.main'。请确保您的运行环境可以找到该模块。")
+    print("您可以尝试将项目根目录添加到 PYTHONPATH 中。")
+    exit(1)
+
 
 # --- 脚本配置 ---
 CONFIG_PATH = Path("configs/unet/stage2_512.yaml")
 CHECKPOINT_PATH = Path("checkpoints/latentsync_unet.pt")
+ASSETS_PATH = Path("assets")
+
+# --- 默认资源 ---
+# 当 'assets' 目录中找不到文件时，将使用这些URL作为后备
+DEFAULT_VIDEO_URLS = [
+    "https://github.com/anotherjesse/LatentSync/raw/main/assets/yuxin.mp4",
+]
+DEFAULT_AUDIO_URLS = [
+    "https://github.com/anotherjesse/LatentSync/raw/main/assets/audio_yuxin.wav",
+]
 
 
 def download_file(url: str, directory: str) -> str | None:
@@ -26,9 +43,7 @@ def download_file(url: str, directory: str) -> str | None:
             total_size_in_bytes = int(r.headers.get("content-length", 0))
             block_size = 1024  # 1 KB
 
-            with tqdm(
-                total=total_size_in_bytes, unit="iB", unit_scale=True, desc=local_filename.name
-            ) as progress_bar:
+            with tqdm(total=total_size_in_bytes, unit="iB", unit_scale=True, desc=local_filename.name) as progress_bar:
                 with open(local_filename, "wb") as f:
                     for chunk in r.iter_content(chunk_size=block_size):
                         progress_bar.update(len(chunk))
@@ -48,78 +63,89 @@ def download_file(url: str, directory: str) -> str | None:
 
 if __name__ == "__main__":
     # --- 1. 设置命令行参数解析 ---
-    parser = argparse.ArgumentParser(description="使用视频和音频进行LatentSync唇形同步")
-    parser.add_argument("--input_video", type=str, required=True, help="输入视频的直接URL链接 (.mp4)")
-    # --- 这里是修改的地方：input_audio 不再是必须的 ---
-    parser.add_argument(
-        "--input_audio", type=str, default=None, help="[可选] 输入音频的直接URL链接。如果留空，则从 'assets' 目录中随机选择一个。"
-    )
+    parser = argparse.ArgumentParser(description="使用URL或本地文件进行LatentSync唇形同步")
+    # 将 required=True 改为 default=None，使其成为可选参数
+    parser.add_argument("--input_video", type=str, default=None, help="输入视频的URL或本地路径 (.mp4)")
+    parser.add_argument("--input_audio", type=str, default=None, help="输入音频的URL或本地路径 (.wav, .mp3)")
     parser.add_argument("--output_dir", type=str, default="./temp", help="输出视频的保存目录")
     parser.add_argument("--guidance_scale", type=float, default=1.5, help="引导系数")
     parser.add_argument("--inference_steps", type=int, default=20, help="推理步数")
     parser.add_argument("--seed", type=int, default=1247, help="随机种子")
     cli_args = parser.parse_args()
 
-    # --- 2. 检查配置文件是否存在 ---
+    # --- 2. 如果未提供输入，则从 assets 目录随机选择 ---
+    if cli_args.input_video is None:
+        print(f"未指定 --input_video，尝试从 '{ASSETS_PATH}' 目录中随机选择...")
+        video_files = list(ASSETS_PATH.glob("*.mp4"))
+        if video_files:
+            cli_args.input_video = str(random.choice(video_files))
+            print(f"已选择视频: {cli_args.input_video}")
+        else:
+            print(f"警告: '{ASSETS_PATH}' 目录中未找到 .mp4 文件。将使用默认的示例URL。")
+            cli_args.input_video = random.choice(DEFAULT_VIDEO_URLS)
+            print(f"已选择视频URL: {cli_args.input_video}")
+
+    if cli_args.input_audio is None:
+        print(f"未指定 --input_audio，尝试从 '{ASSETS_PATH}' 目录中随机选择...")
+        audio_files = list(ASSETS_PATH.glob("*.wav")) + list(ASSETS_PATH.glob("*.mp3"))
+        if audio_files:
+            cli_args.input_audio = str(random.choice(audio_files))
+            print(f"已选择音频: {cli_args.input_audio}")
+        else:
+            print(f"警告: '{ASSETS_PATH}' 目录中未找到音频文件。将使用默认的示例URL。")
+            cli_args.input_audio = random.choice(DEFAULT_AUDIO_URLS)
+            print(f"已选择音频URL: {cli_args.input_audio}")
+
+    # --- 3. 检查配置文件是否存在 ---
     if not CONFIG_PATH.exists() or not CHECKPOINT_PATH.exists():
         print(f"错误: 找不到必要的配置文件或模型检查点。")
         print(f"请确保 '{CONFIG_PATH}' 和 '{CHECKPOINT_PATH}' 存在。")
         exit(1)
 
-    # --- 3. 创建临时目录并处理文件 ---
+    # --- 4. 创建临时目录并准备输入文件 ---
     with tempfile.TemporaryDirectory() as temp_dir:
         print(f"创建临时目录: {temp_dir}")
+        local_video_path, local_audio_path = None, None
 
-        # 下载视频 (视频总是需要下载)
-        local_video_path = download_file(cli_args.input_video, temp_dir)
-        if not local_video_path:
-            print("视频文件下载失败，程序终止。")
-            exit(1)
+        # 处理视频输入 (URL 或本地路径)
+        if cli_args.input_video.startswith("http"):
+            local_video_path = download_file(cli_args.input_video, temp_dir)
+        else:
+            local_video_path = cli_args.input_video
+            print(f"使用本地视频文件: {local_video_path}")
 
-        local_audio_path = None
-
-        # --- 这里是新增的核心逻辑 ---
-        if cli_args.input_audio:
-            # 如果用户提供了音频URL，则下载它
-            print("从提供的URL下载音频...")
+        # 处理音频输入 (URL 或本地路径)
+        if cli_args.input_audio.startswith("http"):
             local_audio_path = download_file(cli_args.input_audio, temp_dir)
         else:
-            # 如果用户未提供，则从 assets 目录随机选择
-            print("未提供音频URL，正在从 'assets' 目录中随机选择...")
-            assets_dir = Path("./assets")
-            if not assets_dir.is_dir():
-                print(f"错误: 'assets' 目录不存在，无法随机选择音频。请确保该目录存在。")
-                exit(1)
+            local_audio_path = cli_args.input_audio
+            print(f"使用本地音频文件: {local_audio_path}")
 
-            # 查找所有 .wav 和 .mp3 文件
-            audio_files = list(assets_dir.glob("*.wav")) + list(assets_dir.glob("*.mp3"))
-            if not audio_files:
-                print(f"错误: 在 'assets' 目录中未找到任何 .wav 或 .mp3 文件。")
-                exit(1)
-
-            selected_audio_path = random.choice(audio_files)
-            # 直接使用本地文件的绝对路径
-            local_audio_path = str(selected_audio_path.absolute())
-            print(f"已随机选择音频文件: {selected_audio_path.name}")
-
-        if not local_audio_path:
-            print("未能获取有效的音频文件路径，程序终止。")
+        # 确保文件路径有效
+        if not (local_video_path and Path(local_video_path).exists()):
+            print("错误：视频文件下载失败或路径无效，程序终止。")
+            exit(1)
+        if not (local_audio_path and Path(local_audio_path).exists()):
+            print("错误：音频文件下载失败或路径无效，程序终止。")
             exit(1)
 
-        # --- 4. 准备输出路径 ---
+        # --- 5. 准备输出路径 ---
         output_dir = Path(cli_args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         video_stem = Path(local_video_path).stem
         output_path = str(output_dir / f"{video_stem}_{current_time}.mp4")
 
-        # --- 5. 加载并更新配置 ---
+        # --- 6. 加载并更新配置 ---
         config = OmegaConf.load(CONFIG_PATH)
         config["run"].update(
-            {"guidance_scale": cli_args.guidance_scale, "inference_steps": cli_args.inference_steps}
+            {
+                "guidance_scale": cli_args.guidance_scale,
+                "inference_steps": cli_args.inference_steps,
+            }
         )
 
-        # --- 6. 构建传递给核心函数的参数 ---
+        # --- 7. 构建传递给核心函数的参数 ---
         inference_args = argparse.Namespace(
             inference_ckpt_path=CHECKPOINT_PATH.absolute().as_posix(),
             video_path=local_video_path,
@@ -132,7 +158,7 @@ if __name__ == "__main__":
             enable_deepcache=False,
         )
 
-        # --- 7. 调用核心推理函数 ---
+        # --- 8. 调用核心推理函数 ---
         try:
             print("\n模型配置完成，开始推理...")
             main(config=config, args=inference_args)
