@@ -9,7 +9,6 @@ from omegaconf import OmegaConf
 from tqdm import tqdm
 
 # 假设核心推理函数位于 'scripts/inference.py' 中
-# 注意：如果此脚本与 'scripts' 目录不在同一父目录下，可能需要调整Python路径
 try:
     from scripts.inference import main
 except ImportError:
@@ -24,7 +23,6 @@ CHECKPOINT_PATH = Path("checkpoints/latentsync_unet.pt")
 ASSETS_PATH = Path("assets")
 
 # --- 默认资源 ---
-# 当 'assets' 目录中找不到文件时，将使用这些URL作为后备
 DEFAULT_VIDEO_URLS = [
     "https://github.com/anotherjesse/LatentSync/raw/main/assets/yuxin.mp4",
 ]
@@ -41,7 +39,7 @@ def download_file(url: str, directory: str) -> str | None:
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             total_size_in_bytes = int(r.headers.get("content-length", 0))
-            block_size = 1024  # 1 KB
+            block_size = 1024
 
             with tqdm(total=total_size_in_bytes, unit="iB", unit_scale=True, desc=local_filename.name) as progress_bar:
                 with open(local_filename, "wb") as f:
@@ -64,10 +62,13 @@ def download_file(url: str, directory: str) -> str | None:
 if __name__ == "__main__":
     # --- 1. 设置命令行参数解析 ---
     parser = argparse.ArgumentParser(description="使用URL或本地文件进行LatentSync唇形同步")
-    # 将 required=True 改为 default=None，使其成为可选参数
     parser.add_argument("--input_video", type=str, default=None, help="输入视频的URL或本地路径 (.mp4)")
     parser.add_argument("--input_audio", type=str, default=None, help="输入音频的URL或本地路径 (.wav, .mp3)")
-    parser.add_argument("--output_dir", type=str, default="./temp", help="输出视频的保存目录")
+    
+    # --- 主要改动 1 ---
+    # 将输出目录的默认值改为 './output'
+    parser.add_argument("--output_dir", type=str, default="./output", help="输出视频的保存目录")
+    
     parser.add_argument("--guidance_scale", type=float, default=1.5, help="引导系数")
     parser.add_argument("--inference_steps", type=int, default=20, help="推理步数")
     parser.add_argument("--seed", type=int, default=1247, help="随机种子")
@@ -107,21 +108,18 @@ if __name__ == "__main__":
         print(f"创建临时目录: {temp_dir}")
         local_video_path, local_audio_path = None, None
 
-        # 处理视频输入 (URL 或本地路径)
         if cli_args.input_video.startswith("http"):
             local_video_path = download_file(cli_args.input_video, temp_dir)
         else:
             local_video_path = cli_args.input_video
             print(f"使用本地视频文件: {local_video_path}")
 
-        # 处理音频输入 (URL 或本地路径)
         if cli_args.input_audio.startswith("http"):
             local_audio_path = download_file(cli_args.input_audio, temp_dir)
         else:
             local_audio_path = cli_args.input_audio
             print(f"使用本地音频文件: {local_audio_path}")
 
-        # 确保文件路径有效
         if not (local_video_path and Path(local_video_path).exists()):
             print("错误：视频文件下载失败或路径无效，程序终止。")
             exit(1)
@@ -132,9 +130,10 @@ if __name__ == "__main__":
         # --- 5. 准备输出路径 ---
         output_dir = Path(cli_args.output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        video_stem = Path(local_video_path).stem
-        output_path = str(output_dir / f"{video_stem}_{current_time}.mp4")
+        
+        # --- 主要改动 2 ---
+        # 将输出路径固定为 'output/output.mp4'
+        output_path = str(output_dir / "output.mp4")
 
         # --- 6. 加载并更新配置 ---
         config = OmegaConf.load(CONFIG_PATH)
