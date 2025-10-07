@@ -18,7 +18,7 @@ except ImportError:
 
 
 # --- 脚本配置 ---
-CONFIG_PATH = Path("configs/unet/stage2_512.yaml")
+CONFIG_PATH = Path("configs/unet/stage2.yaml")
 CHECKPOINT_PATH = Path("checkpoints/latentsync_unet.pt")
 ASSETS_PATH = Path("assets")
 
